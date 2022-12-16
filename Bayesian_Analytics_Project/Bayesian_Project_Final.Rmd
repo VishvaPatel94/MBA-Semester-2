@@ -1,0 +1,321 @@
+---
+title: "Untitled"
+author: "Phani"
+date: "29/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+#Libraries
+
+library(StanHeaders)
+library(rstan)
+library(rstanarm)
+library("bayesplot")
+library(tidybayes)
+library(dplyr)
+#library(tidyselect)
+library(tidyr)
+library(bayesrules)
+library(broom.mixed)
+set.seed(84735)
+```
+
+```{r}
+#Reading data into env
+data("airbnb_small")
+View(airbnb_small)
+
+summary(airbnb_small)
+
+#Picking out requires columns
+d <-  airbnb_small[,c(2,3,4,5,9)]
+d
+
+#Descriptive summary statistics
+summary(d)
+
+#Visual plots
+hist(d$rating)
+hist(d$reviews)
+hist(d$accommodates)
+
+
+```
+```{r}
+#Deansity Plots
+plot(density(d$reviews),frame = FALSE, col = "blue",main = "Density plot Reviews")
+plot(density(d$accommodates),frame = FALSE, col = "red",main = "Density plot Accomodates")
+plot(density(d$rating),frame = FALSE, col = "blue",main = "Density plot Rating")
+
+```
+```{r}
+
+#Data cleaning
+
+colSums(is.na(d))
+
+# No null values 
+
+summary(d)
+
+unique(d$rating)
+
+```
+```{r}
+# Y~ Review
+# X ~ rating , family = Gaussian  (Trail purpose, No Causation)
+
+
+model <- stan_glm(
+  reviews ~ rating,
+  data = d, family = gaussian,
+  prior_intercept = normal(25, 5),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2)
+
+
+```
+
+```{r}
+prior_summary(model)
+```
+
+
+```{r}
+
+# MCMC diagnostics
+mcmc_trace(model, size = 0.1)
+mcmc_dens_overlay(model)
+mcmc_acf(model)
+
+
+```
+```{r}
+pp_check(model)
+
+```
+```{r}
+
+# Starts here :
+#   Y ~ reviews
+#   X~ rating + accommodates+ district+room_type
+#   family ~
+# Simulating Default Priors
+
+equality_model_prior <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = d, 
+                                 family = poisson,
+                                 prior_intercept = normal(2, 0.5),
+                                 prior = normal(0, 2.5, autoscale = TRUE), 
+                                 chains = 4, iter = 5000*2, seed = 84735, 
+                                 prior_PD = TRUE)
+```
+```{r}
+d
+```
+```{r}
+mcmc_trace(equality_model_prior, size = 0.1)
+mcmc_dens_overlay(equality_model_prior)
+mcmc_acf(equality_model_prior)
+```
+
+```{r}
+
+set.seed(1)
+pp_check(equality_model_prior, plotfun = "hist") + 
+  xlab("laws")
+
+pp_check(equality_model_prior) + 
+  xlab("laws")
+
+
+```
+
+```{r}
+
+
+m2 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = d, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(2, 0.5,autoscale=TRUE),
+                                 prior = normal(0, 2.5, autoscale = TRUE),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735)
+
+
+```
+
+```{r}
+set.seed(84735)
+
+
+pp_check(m2, plotfun = "hist", nreps = 5) + 
+  xlab("reviews") + xlim(c(1,15))
+
+pp_check(m2) + 
+  xlab("reviews") + xlim(c(1,15))
+
+```
+```{r}
+
+# Splitting data into 3 parts (mtest : start : train :: 10:18:72)
+
+e <-  airbnb_small[,c(2,3,4,5,9)]
+set.seed(84735)
+
+smp_size <- floor(0.90 * nrow(e))
+
+## set the seed to make your partition reproducible
+
+train_ind <- sample(seq_len(nrow(e)), size = smp_size)
+
+train <- e[train_ind, ]
+mtest <- e[-train_ind, ]
+
+
+smp_size <- floor(0.80 * nrow(train))
+
+## set the seed to make your partition reproducible
+
+train_ind <- sample(seq_len(nrow(e)), size = smp_size)
+
+train <- e[train_ind, ]
+start <- e[-train_ind, ]
+start
+
+```
+```{r}
+# Simulating only Priors [No posterior Involved]
+# Y~ Review
+# X ~ rating + accommodates+ district+room_type , 
+# family = neg_binomial_2
+# Priors - Default by stan package
+# no of parallel markov chains =4 
+
+a1 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = start, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(2, 0.5,autoscale=TRUE),
+                                 prior = normal(0, 2.5, autoscale = TRUE),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735, 
+                                 prior_PD = TRUE)
+
+
+
+summary(a1)
+tidy(a1, conf.int = TRUE, conf.level = 0.80)
+```
+```{r}
+#  Posterior simulation : Updating existing model by changing param prior_PD to False
+
+model_a1  <-  update(a1, prior_PD= FALSE)
+  
+```
+```{r}
+# Displaying summary of model 
+summary(model_a1)
+prior_summary(model_a1)
+
+#Displaying coefficients
+tidy(model_a1, conf.int = TRUE, conf.level = 0.80)
+
+```
+
+```{r}
+
+# Using above posterior as Informative Prior in present model , keeping r (dispersion param) as default and autoscaling enabled
+
+a2 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = train, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(0.1734715, 1.05163444),
+                                 prior = normal(c(0.5830046, 0.0255818,0.2810219,0.1868308,0.1179883,-0.6313026),
+                                                c(0.21301526, 0.03629734,   0.14582486,  0.29726908,0.16374721, 0.42008012)),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735)
+
+
+
+summary(a2)
+tidy(a2, conf.int = TRUE, conf.level = 0.80)
+```
+```{r}
+# pp_check is simulated datasets (labeled yrep) against a plot of the original review data (labeled y)
+
+pp_check(a2)+ xlim(c(1,335))
+
+pp_check(model_a1)+ xlim(c(1,335))
+
+
+```
+```{r}
+
+#MODEL DIAGNOSTICS
+
+mcmc_trace(a2)
+mcmc_dens_overlay(a2)
+mcmc_acf(a2)
+
+
+```
+```{r}
+
+# prediction and displaying various errors
+
+set.seed(84735)
+prediction <- posterior_predict(
+  a2, newdata = mtest)
+head(prediction)
+
+prediction_summary(model = a2, data = mtest)
+
+```
+```{r}
+# Using Cross validation 
+
+set.seed(84735)
+mcv <- prediction_summary_cv(model = a2, 
+                                    data = e, k = 6)
+mcv$cv
+
+```
+```{r}
+# ELPD for prediction accuracy
+
+model_elpd <- loo(a2)
+model_elpd$estimates
+
+```
+
+```{r}
+#interaction model 
+interaction_model <- stan_glm(
+  reviews ~ rating + accommodates + district + room_type + accommodates:room_type , 
+  data = e, family = gaussian,
+  prior_intercept = normal(25, 5),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+
+tidy(interaction_model, effects = c("fixed", "aux"))
+
+posterior_interval(interaction_model, prob = 0.80, 
+                   pars = "accommodates:room_typePrivate room")
+posterior_interval(interaction_model, prob = 0.80, 
+                   pars = "accommodates:room_typeShared room")
+
+e %>%
+  add_fitted_draws(interaction_model, n = 200) %>%
+  ggplot(aes(x = accommodates, y = reviews, color = room_type)) +
+    geom_line(aes(y = .value, group = paste(room_type, .draw)), alpha = 0.1)
+
+set.seed(84735)
+prediction_summary_cv(model = interaction_model, data = e, k = 10)
+```
+

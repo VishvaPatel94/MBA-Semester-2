@@ -1,0 +1,275 @@
+---
+title: "Untitled"
+author: "Phani"
+date: "29/04/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+#Libraries
+library(StanHeaders)
+library(rstan)
+library(rstanarm)
+library("bayesplot")
+library(tidybayes)
+library(dplyr)
+#library(tidyselect)
+library(tidyr)
+library(bayesrules)
+library(broom.mixed)
+set.seed(84735)
+```
+```{r}
+#Reading data into env
+data("airbnb_small")
+#View(airbnb_small)
+```
+
+
+```{r}
+summary(airbnb_small)
+```
+
+
+```{r}
+#Picking out requires columns
+d <-  airbnb_small[,c(2,3,4,5,9)]
+d
+
+#Descriptive summary statistics
+summary(d)
+```
+
+
+```{r}
+#Visual plots
+hist(d$rating)
+hist(d$reviews)
+hist(d$accommodates)
+```
+```{r}
+#Deansity Plots
+plot(density(d$reviews),frame = FALSE, col = "blue",main = "Density plot Reviews")
+plot(density(d$accommodates),frame = FALSE, col = "red",main = "Density plot Accomodates")
+plot(density(d$rating),frame = FALSE, col = "blue",main = "Density plot Rating")
+```
+```{r}
+#Data cleaning
+
+colSums(is.na(d))
+```
+
+
+```{r}
+# No null values 
+
+summary(d)
+```
+
+
+```{r}
+unique(d$rating)
+
+```
+
+
+
+```{r}
+
+# Splitting data into 3 parts (mtest : start : train :: 10:18:72)
+
+e <-  airbnb_small[,c(2,3,4,5,9)]
+set.seed(7)
+ss <- sample(1:3,size=nrow(e),replace=TRUE,prob=c(0.6,0.1,0.3))
+train <- e[ss==1,]
+mtest <- e[ss==2,]
+start <- e[ss==3,]
+```
+
+
+```{r}
+# Simulating only Priors [No posterior Involved]
+# Y~ Review
+# X ~ rating + accommodates+ district+room_type , 
+# family = neg_binomial_2
+# Priors - Default by stan package
+# no of parallel markov chains =4 
+
+a1 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = start, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(2, 0.5,autoscale=TRUE),
+                                 prior = normal(0, 2.5, autoscale = TRUE),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735, 
+                                 prior_PD = TRUE)
+
+
+
+summary(a1)
+tidy(a1, conf.int = TRUE, conf.level = 0.95)
+```
+```{r}
+prior_summary(a1)
+
+```
+
+```{r}
+#  Posterior simulation : Updating existing model by changing param prior_PD to False
+
+model_a1  <-  update(a1, prior_PD= FALSE)
+  
+```
+```{r}
+# Displaying summary of model 
+summary(model_a1)
+prior_summary(model_a1)
+```
+
+
+```{r}
+neff_ratio(model_a1)
+rhat(model_a1)
+```
+
+
+```{r}
+#Displaying coefficients
+t_df <- tidy(model_a1, conf.int = TRUE, conf.level = 0.95)
+t_df
+```
+
+```{r}
+# Using above posterior as Informative Prior in present model , keeping r (dispersion param) as default and autoscaling enabled
+
+a2 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = train, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(t_df$estimate[1], t_df$std.error[1]),
+                                 prior=normal(c(t_df$estimate[2],
+                                                t_df$estimate[3],
+                                                t_df$estimate[4],
+                                                t_df$estimate[5],
+                                                t_df$estimate[6],
+                                                t_df$estimate[7]),
+                                                c(t_df$std.error[2],
+                                                  t_df$std.error[3],
+                                                  t_df$std.error[4],
+                                                  t_df$std.error[5],
+                                                  t_df$std.error[6],
+                                                  t_df$std.error[7])),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735)
+```
+
+
+```{r}
+neff_ratio(a2)
+rhat(a2)
+```
+
+
+```{r}
+summary(a2)
+tidy(a2, conf.int = TRUE, conf.level = 0.95)
+```
+```{r}
+# pp_check is simulated datasets (labeled yrep) against a plot of the original review data (labeled y)
+
+pp_check(a2)+ xlim(c(1,335))
+
+pp_check(model_a1)+ xlim(c(1,335))
+
+
+```
+```{r}
+
+#MODEL DIAGNOSTICS
+
+mcmc_trace(a2)
+mcmc_dens_overlay(a2)
+mcmc_acf(a2)
+
+
+```
+```{r}
+
+# prediction and displaying various errors
+
+set.seed(84735)
+prediction <- posterior_predict(
+  a2, newdata = mtest)
+head(prediction)
+
+prediction_summary(model = a2, data = mtest)
+
+```
+```{r}
+# Using Cross validation 
+
+set.seed(84735)
+mcv <- prediction_summary_cv(model = a2, 
+                                    data = e, k = 6)
+mcv$cv
+
+```
+```{r}
+model_elpd <- loo(model_a1,k_threshold = 0.7)
+model_elpd$estimates
+```
+
+```{r}
+# ELPD for prediction accuracy
+
+model_elpd <- loo(a2)
+model_elpd$estimates
+```
+
+```{r}
+a3 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = train, 
+                                 family = neg_binomial_2,
+                                 prior_intercept = normal(2, 0.5,autoscale=TRUE),
+                                 prior = normal(0, 2.5, autoscale = TRUE),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735, 
+                                 prior_PD = FALSE)
+
+
+
+summary(a3)
+tidy(a3, conf.int = TRUE, conf.level = 0.95)
+```
+
+
+```{r}
+model_elpd_3 <- loo(a3)
+model_elpd_3$estimates
+```
+
+
+```{r}
+a4 <- stan_glm(reviews ~ rating + accommodates+ district+room_type, 
+                                 data = train, 
+                                 family = gaussian,
+                                 prior_intercept = normal(2, 0.5,autoscale=TRUE),
+                                 prior = normal(0, 2.5, autoscale = TRUE),
+                                 prior_aux = exponential(1, autoscale = TRUE),
+                                 chains = 4, iter = 5000*2, seed = 84735, 
+                                 prior_PD = FALSE)
+
+
+
+summary(a4)
+tidy(a4, conf.int = TRUE, conf.level = 0.95)
+```
+
+
+```{r}
+model_elpd_4 <- loo(a4)
+model_elpd_4$estimates
+```
+```
